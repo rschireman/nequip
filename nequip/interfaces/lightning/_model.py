@@ -32,6 +32,7 @@ class LitNequIP(pl.LightningModule):
         self.save_hyperparameters(dict(config))
         # use the ones from lightning to enable lightning savenload
         # object is pretty similar to our Config so should work
+        # TODO: this doesn't work without dataset!
         self.model = model_from_config(self.hparams)
 
         # now, we build other objects - copied from trainer.py
@@ -45,6 +46,8 @@ class LitNequIP(pl.LightningModule):
         self.train_on_keys = self.loss.keys
 
         if self.hparams.use_ema:
+            raise NotImplementedError
+            # TODO: how to make this multi-GPU compatible?
             # TODO: this may not work at all since Lightning
             # wants to manage devices itself...
             # may have to implement explicitly like their
@@ -97,19 +100,9 @@ class LitNequIP(pl.LightningModule):
         with torch.enable_grad():
             return self.model(data)
 
-    def training_step(self, batch, batch_idx):
-        # lightning requires batch to be a list of tensors
-        # so we need a special dataloader and a default key order
-        # custom keys may not be possible?
-        # TODO ^^^
-
-        # TODO: reconstruct atomicdatadict
-        data = {}
-
+    def training_step(self, data: AtomicDataDict, batch_idx):
         if hasattr(self.model, "unscale"):
             # This means that self.model is RescaleOutputs
-            # this will normalize the targets
-            # in validation (eval mode), it does nothing
             # in train mode, if normalizes the targets
             data_unscaled = self.model.unscale(data)
         else:
@@ -118,7 +111,7 @@ class LitNequIP(pl.LightningModule):
         # Run model
         # We make a shallow copy of the input dict in case the model modifies it
         input_data = data_unscaled.copy()
-        out = self.model(input_data)
+        out = self(input_data)
         del input_data
 
         # compute the loss on the normal space output
@@ -132,22 +125,17 @@ class LitNequIP(pl.LightningModule):
         self.metrics(pred=out, ref=data)
 
         # TODO: step ema somewhere
-
-        # TODO: log loss contrib
         return loss
 
     def training_epoch_end(self, training_step_outputs):
         # this is the exact same as validation for reporting metrics, so call it:
         self.validation_epoch_end([None for _ in training_step_outputs])
 
-    def validation_step(self, batch, batch_idx):
-        # TODO: rebuild atomicdatadict
-        data: AtomicDataDict = {}
-
+    def validation_step(self, data: AtomicDataDict, batch_idx):
         # no need to call self.model.unscale, since it's no-op in validation
         input_data = data.copy()
         with self.ema.average_parameters():
-            out = self.model(input_data)
+            out = self(input_data)
         del input_data
 
         if hasattr(self.model, "unscale"):
@@ -182,7 +170,7 @@ class LitNequIP(pl.LightningModule):
                 self.metrics.accumulate_state(this_metrics_state)
             # and then log it:
             # TODO:
-            self.log("my_reduced_metric", mean, rank_zero_only=True)
+            # self.log("my_reduced_metric", mean, rank_zero_only=True)
 
         # reset the metrics for the next epoch:
         self.loss_stat.reset()
