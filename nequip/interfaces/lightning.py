@@ -45,6 +45,10 @@ class LitNequIP(pl.LightningModule):
         self.train_on_keys = self.loss.keys
 
         if self.hparams.use_ema:
+            # TODO: this may not work at all since Lightning
+            # wants to manage devices itself...
+            # may have to implement explicitly like their
+            # StochasticMovingAverage
             self.ema = ExponentialMovingAverage(
                 self.model.parameters(),
                 decay=self.hparams.ema_decay,
@@ -123,12 +127,18 @@ class LitNequIP(pl.LightningModule):
         # If we are in training mode, we need to bring the prediction
         # into real units for metrics
         out = self.model.scale(out, force_process=True)
-        # TODO: log these
-        batch_losses = self.loss_stat(loss, loss_contrib)
-        batch_metrics = self.metrics(pred=out, ref=data)
+        # we use this later in training epoch end
+        self.loss_stat(loss, loss_contrib)
+        self.metrics(pred=out, ref=data)
+
+        # TODO: step ema somewhere
 
         # TODO: log loss contrib
         return loss
+
+    def training_epoch_end(self, training_step_outputs):
+        # this is the exact same as validation, so call it:
+        self.validation_epoch_end([None for _ in training_step_outputs])
 
     def validation_step(self, batch, batch_idx):
         # TODO: rebuild atomicdatadict
@@ -136,7 +146,8 @@ class LitNequIP(pl.LightningModule):
 
         # no need to call self.model.unscale, since it's no-op in validation
         input_data = data.copy()
-        out = self.model(input_data)
+        with self.ema.average_parameters():
+            out = self.model(input_data)
         del input_data
 
         if hasattr(self.model, "unscale"):
@@ -148,14 +159,34 @@ class LitNequIP(pl.LightningModule):
         else:
             loss, loss_contrib = self.loss(pred=out, ref=data)
 
-        # TODO log these
-        # TODO: correctly accumulate these across multi GPU batches
-        batch_losses = self.loss_stat(loss, loss_contrib)
-        # in validation mode, data is in real units and the network scales
-        # out to be in real units interally.
-        # in training mode, data is still in real units, and we rescaled
-        # out to be in real units above.
-        batch_metrics = self.metrics(pred=out, ref=data)
+        # we get the values from here in validation_epoch_end
+        self.loss_stat(loss, loss_contrib)
+        self.metrics(pred=out, ref=data)
+
+    def validation_epoch_end(self, val_step_outputs):
+        # see https://pytorch-lightning.readthedocs.io/en/latest/advanced/multi_gpu.html#synchronize-validation-and-test-logging
+        # collect metrics from all ranks:
+        loss_stat_states = self.all_gather(self.loss_stat.get_state())
+        metrics_states = self.all_gather(self.metrics.get_state())
+        # batch and log the metrics
+        # which we do only on rank 0:
+        if self.trainer.is_global_zero:
+            world_size: int = len(next(loss_stat_states.values()))
+            for i in range(world_size):
+                this_loss_state = {k: v[i] for k, v in loss_stat_states}
+                this_metrics_state = {
+                    k1: {k2: v2[i] for k2, v2 in v1.items()}
+                    for k1, v1 in metrics_states.items()
+                }
+                self.loss_stat.accumulate_state(this_loss_state)
+                self.metrics.accumulate_state(this_metrics_state)
+            # and then log it:
+            # TODO:
+            self.log("my_reduced_metric", mean, rank_zero_only=True)
+
+        # reset the metrics for the next epoch:
+        self.loss_stat.reset()
+        self.metrics.reset()
 
     def configure_optimizers(self):
         # initialize optimizer
