@@ -200,6 +200,17 @@ class Metrics:
             for stat in stats.values():
                 stat.to(device=device)
 
+    def get_state(self):
+        return {
+            k1: {k2: v2.get_state() for k2, v2 in v1.items()}
+            for k1, v1 in self.running_stats.items()
+        }
+
+    def accumulate_state(self, states: dict):
+        for k1, v1 in states:
+            for k2, state in v1:
+                self.running_stats[k1, k2].accumulate_state(state)
+
     def current_result(self):
 
         metrics = {}

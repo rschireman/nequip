@@ -180,6 +180,13 @@ class LossStat:
         for v in self.loss_stat.values():
             v.to(device=device)
 
+    def get_state(self):
+        return {k: v.get_state() for k, v in self.loss_stat.items()}
+
+    def accumulate_state(self, states: dict):
+        for k, state in states:
+            self.loss_stat[k].accumulate_state(state)
+
     def current_result(self):
         results = {
             "loss_" + ABBREV.get(k, k): v.current_result().item()
