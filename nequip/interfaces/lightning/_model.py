@@ -137,7 +137,7 @@ class LitNequIP(pl.LightningModule):
         return loss
 
     def training_epoch_end(self, training_step_outputs):
-        # this is the exact same as validation, so call it:
+        # this is the exact same as validation for reporting metrics, so call it:
         self.validation_epoch_end([None for _ in training_step_outputs])
 
     def validation_step(self, batch, batch_idx):
